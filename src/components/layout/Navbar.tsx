@@ -1,4 +1,4 @@
-
+// src/components/layout/Navbar.tsx (or wherever your Navbar lives)
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Menu, X, Bell, Globe, Shield, LogOut, ChevronDown } from 'lucide-react';
@@ -40,7 +40,8 @@ const Navbar = () => {
             <Link to="/complaint/track" className="hover:text-police-gold transition-colors">Track Case</Link>
             <Link to="/sos" className="hover:text-police-gold transition-colors">Emergency SOS</Link>
             <Link to="/learn" className="hover:text-police-gold transition-colors">Law Learning</Link>
-            <Link to="/heatmap" className="hover:text-police-gold transition-colors">Safety Map</Link>
+            {/* updated path */}
+            <Link to="/safety-map" className="hover:text-police-gold transition-colors">Safety Map</Link>
           </nav>
 
           {/* Action Buttons */}
@@ -120,7 +121,8 @@ const Navbar = () => {
             <Link to="/complaint/track" className="block py-2 hover:text-police-gold transition-colors">Track Case</Link>
             <Link to="/sos" className="block py-2 hover:text-police-gold transition-colors">Emergency SOS</Link>
             <Link to="/learn" className="block py-2 hover:text-police-gold transition-colors">Law Learning</Link>
-            <Link to="/heatmap" className="block py-2 hover:text-police-gold transition-colors">Safety Map</Link>
+            {/* updated path */}
+            <Link to="/safety-map" className="block py-2 hover:text-police-gold transition-colors">Safety Map</Link>
             <Link to="/profile" className="block py-2 hover:text-police-gold transition-colors">Profile</Link>
             <div className="border-t border-white/10 py-2 mt-2 flex justify-between">
               <button onClick={toggleLanguage} className="flex items-center hover:text-police-gold transition-colors">

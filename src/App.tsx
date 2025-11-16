@@ -1,9 +1,9 @@
-
+// src/App.tsx
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import ComplaintForm from "./pages/complaint/ComplaintForm";
@@ -27,7 +27,13 @@ const App = () => (
           <Route path="/complaint/track" element={<TrackCase />} />
           <Route path="/sos" element={<EmergencySOS />} />
           <Route path="/learn" element={<LawLearning />} />
-          <Route path="/heatmap" element={<SafetyMap />} />
+
+          {/* canonical safety map route */}
+          <Route path="/safety-map" element={<SafetyMap />} />
+
+          {/* keep the existing heatmap path but redirect to /safety-map for compatibility */}
+          <Route path="/heatmap" element={<Navigate to="/safety-map" replace />} />
+
           <Route path="/profile" element={<Profile />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
