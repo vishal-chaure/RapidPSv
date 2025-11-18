@@ -1,166 +1,298 @@
-import { useState } from 'react';
-import MainLayout from '@/components/layout/MainLayout';
-import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent } from '@/components/ui/tabs';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { FileText, Upload } from 'lucide-react';
-import { supabase } from '@/lib/supabaseClient';
+import { useState } from "react";
+import MainLayout from "@/components/layout/MainLayout";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Upload } from "lucide-react";
+
+// Backend proxy URL (defaults to local Express server on port 6000)
+const GEMINI_PROXY_URL =
+  import.meta.env?.VITE_GEMINI_PROXY_URL || "http://localhost:5050/analyze";
 
 const ComplaintForm = () => {
-  const [step, setStep] = useState(1);
+  const [textValue, setTextValue] = useState("");
+  const [imageFiles, setImageFiles] = useState<FileList | null>(null);
+  // const [videoFiles, setVideoFiles] = useState<FileList | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [warning, setWarning] = useState("");
+  const [scores, setScores] = useState<{
+    text_score: number;
+    image_score: number;
+    video_score: number;
+    finalScore: number;
+    isAnomalous: boolean;
+    reasons: string[];
+  } | null>(null);
+  const ANOMALY_THRESHOLD = 0.7;
 
-  const [formData, setFormData] = useState({
-    name: '',
-    contactNumber: '',
-    email: '',
-    address: '',
-    aadharNumber: '',
-    crimeType: '',
-    dateTime: '',
-    description: '',
-  });
+  // Read text from uploaded .txt file
+  const handleTextFileUpload = (file: File | null) => {
+    if (!file) return;
 
-  const [aadharFile, setaadharFile] = useState<File | null>(null);
-  const [evidenceFiles, setEvidenceFiles] = useState<FileList | null>(null);
-
-  const handleInput = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      setTextValue(text); // put txt file content into textarea
+    };
+    reader.readAsText(file);
   };
 
-  const handleSubmit = async () => {
+  // Compress image to a manageable base64 string
+  const compressImageToBase64 = (file: File) => {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            reject(new Error("Unable to compress image."));
+            return;
+          }
+
+          const maxSize = 800;
+          let { width, height } = img;
+
+          if (width > height && width > maxSize) {
+            height = (height * maxSize) / width;
+            width = maxSize;
+          } else if (height > maxSize) {
+            width = (width * maxSize) / height;
+            height = maxSize;
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          ctx.drawImage(img, 0, 0, width, height);
+
+          const mime = file.type || "image/jpeg";
+          const dataUrl = canvas.toDataURL(mime, 0.7);
+          const base64 = dataUrl.split(",")[1] || "";
+          resolve(base64);
+        };
+        img.onerror = reject;
+        img.src = reader.result as string;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const serializeImages = async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return [];
+
+    const serialized = await Promise.all(
+      Array.from(fileList).map(async (file) => ({
+        mime: file.type || "image/jpeg",
+        base64: await compressImageToBase64(file),
+      }))
+    );
+
+    return serialized;
+  };
+
+  // Gemini call handler (via backend proxy)
+  const handleProcess = async () => {
+    const trimmedText = textValue.trim();
+    const hasImages = imageFiles && imageFiles.length > 0;
+
+    if (!trimmedText && !hasImages) {
+      setWarning(
+        "Please add complaint text or upload at least one image before processing."
+      );
+      return;
+    }
+
+    setWarning("");
+    setIsProcessing(true);
+
     try {
-      // aadhar Upload
-      let aadharUrl = null;
-      if (aadharFile) {
-        const path = `aadhar/${Date.now()}_${aadharFile.name}`;
-        const { data, error } = await supabase.storage
-          .from('complaints')
-          .upload(path, aadharFile);
+      const preparedImages = await serializeImages(imageFiles);
 
-        if (error) throw error;
-
-        aadharUrl = supabase.storage.from('complaints').getPublicUrl(path).data.publicUrl;
-      }
-
-      // Evidence Uploads
-      let evidenceUrls: string[] = [];
-      if (evidenceFiles && evidenceFiles.length > 0) {
-        for (let i = 0; i < evidenceFiles.length; i++) {
-          const file = evidenceFiles[i];
-          const path = `evidence/${Date.now()}_${file.name}`;
-          const { data, error } = await supabase.storage
-            .from('complaints')
-            .upload(path, file);
-
-          if (error) throw error;
-
-          const publicUrl = supabase.storage.from('complaints').getPublicUrl(path).data.publicUrl;
-          evidenceUrls.push(publicUrl);
-        }
-      }
-
-      // Save to DB
-      const { error: insertError } = await supabase.from('complaints').insert({
-        name: formData.name,
-        contact_number: formData.contactNumber,
-        email: formData.email,
-        address: formData.address,
-        aadhar_number: formData.aadharNumber,
-        aadhar_file_url: aadharUrl,
-        crime_type: formData.crimeType,
-        datetime: formData.dateTime,
-        description: formData.description,
-        evidence_urls: evidenceUrls,
+      const response = await fetch(GEMINI_PROXY_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text: trimmedText,
+          images: preparedImages,
+          // videos: preparedVideos,
+        }),
       });
 
-      if (insertError) throw insertError;
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          `Gemini request failed (${response.status}): ${errorText || "Unknown error"}`
+        );
+      }
 
-      alert('Complaint submitted successfully!');
-      setStep(1);
-    } catch (err: any) {
-      console.error(err.message);
-      alert('Error submitting complaint!');
+      const json = await response.json();
+      console.log(json);
+
+      // Extract raw values (could be number or null)
+      const rawText = json.text_score;
+      const rawImage = json.image_score;
+      const rawVideo = json.video_score;
+
+      // Convert null → 0 (for display and thresholding)
+      const text_score = rawText !== null ? Number(rawText) : 0;
+      const image_score = rawImage !== null ? Number(rawImage) : 0;
+      const video_score = rawVideo !== null ? Number(rawVideo) : 0;
+
+      // Thresholds
+      const TEXT_THRESHOLD = 0.60;
+      const IMAGE_THRESHOLD = 0.50;
+      const VIDEO_THRESHOLD = 0.70;
+
+      // Determine anomaly + why it happened
+      let isAnomalous = false;
+      const reasons = [];
+
+      // Check text anomaly
+      if (text_score > TEXT_THRESHOLD) {
+        isAnomalous = true;
+        reasons.push("Text content appears anomalous or suspicious.");
+      }
+
+      // Check image anomaly
+      if (image_score > IMAGE_THRESHOLD) {
+        isAnomalous = true;
+        reasons.push("Image evidence appears manipulated, edited, or irrelevant.");
+      }
+
+      // Check video anomaly
+      if (video_score > VIDEO_THRESHOLD) {
+        isAnomalous = true;
+        reasons.push("Video evidence appears manipulated or deepfake-like.");
+      }
+
+      // Highest score for display
+      const finalScore = Math.max(text_score, image_score, video_score);
+
+      // Update state
+      setScores({
+        text_score,
+        image_score,
+        video_score,
+        finalScore,
+        isAnomalous,
+        reasons,     // <--- NEW
+      });
+    } catch (error) {
+      console.error(error);
+      setWarning("Something went wrong while contacting Gemini. Please try again.");
+    } finally {
+      setIsProcessing(false);
     }
   };
 
   return (
     <MainLayout>
-      <div className="container mx-auto px-4 py-8">
-        <div className="max-w-3xl mx-auto">
-          <h1 className="text-3xl font-bold text-police-navy mb-6">File a Complaint</h1>
+      <div className="container mx-auto px-4 py-10">
+        <h1 className="text-3xl font-bold mb-8 text-police-navy">
+          Upload Complaint Files
+        </h1>
 
-          {/* Progress bar */}
-          <div className="mb-8">
-            <div className="h-2 bg-gray-200 rounded-full">
-              <div
-                className="h-full bg-police-saffron rounded-full transition-all"
-                style={{ width: `${(step / 5) * 100}%` }}
+        <div className="bg-white shadow-md p-6 rounded-lg">
+          {warning && (
+            <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              {warning}
+            </div>
+          )}
+
+          {/* Horizontal layout wrapper */}
+          <div className="flex flex-col md:flex-row gap-6">
+
+            {/* TEXT SECTION */}
+            <div className="flex-1 space-y-3">
+              <label className="font-semibold">Enter or Upload Text</label>
+
+              {/* Textarea */}
+              <Textarea
+                value={textValue}
+                onChange={(e) => setTextValue(e.target.value)}
+                placeholder="Type complaint text here..."
+                className="min-h-[150px]"
+              />
+
+              {/* File Input for .txt */}
+              <Input
+                type="file"
+                accept=".txt"
+                onChange={(e) => handleTextFileUpload(e.target.files?.[0] || null)}
               />
             </div>
-            <div className="flex justify-between mt-2 text-sm text-gray-600">
-              <span>Personal Info</span>
-              <span>Identity</span>
-              <span>Details</span>
-              <span>Evidence</span>
-              <span>Review</span>
+
+            {/* IMAGE SECTION */}
+            <div className="flex-1 space-y-3">
+              <label className="font-semibold">Upload Images</label>
+
+              <Input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={(e) => setImageFiles(e.target.files)}
+              />
             </div>
+
+            {/* VIDEO SECTION (temporarily disabled) */}
+            {/* <div className="flex-1 space-y-3">
+              <label className="font-semibold">Upload Videos</label>
+
+              <Input
+                type="file"
+                accept="video/*"
+                multiple
+                onChange={(e) => setVideoFiles(e.target.files)}
+              />
+            </div> */}
+
           </div>
 
-          <Tabs defaultValue="1" value={step.toString()}>
-            <TabsContent value="1">
-              <div className="space-y-4">
-                <Input name="name" placeholder="Full Name" onChange={handleInput} />
-                <Input name="contactNumber" placeholder="Contact Number" onChange={handleInput} />
-                <Input name="email" placeholder="Email Address" onChange={handleInput} />
-                <Textarea name="address" placeholder="Residential Address" onChange={handleInput} />
-                <Button onClick={() => setStep(2)} className="w-full">Next</Button>
-              </div>
-            </TabsContent>
+          {/* PROCESS BUTTON */}
+          <Button
+            onClick={handleProcess}
+            disabled={isProcessing}
+            className="w-full mt-6 bg-police-green text-white hover:bg-police-green/90"
+          >
+            <Upload className="mr-2 h-4 w-4" />
+            {isProcessing ? "Processing..." : "Process"}
+          </Button>
 
-            <TabsContent value="2">
-              <div className="space-y-4">
-                <Input name="aadharNumber" placeholder="aadhar Card Number" onChange={handleInput} />
-                <Input type="file" accept=".pdf,.jpg,.png" onChange={(e) => setaadharFile(e.target.files?.[0] || null)} />
-                <Button onClick={() => setStep(3)} className="w-full">Next</Button>
-              </div>
-            </TabsContent>
+          {/* RESULTS */}
+          {scores && (
+            <div className="mt-6 rounded-lg border border-gray-200 bg-gray-50 p-6 text-police-navy shadow-sm">
+              <h2 className="text-xl font-semibold mb-3">Results</h2>
+              <div className="space-y-2">
+                <p>Text anomaly score: {scores.text_score.toFixed(2)}</p>
+                <p>Image anomaly score: {scores.image_score.toFixed(2)}</p>
+                <p>Video anomaly score: {scores.video_score.toFixed(2)}</p>
+                {/* <p className="font-semibold">
+                  Final weighted score: {scores.finalScore.toFixed(2)}
+                </p> */}
+                <p
+                  className={`mt-4 font-semibold ${scores.isAnomalous ? "text-red-600" : "text-green-600"
+                    }`}
+                >
+                  {scores.isAnomalous
+                    ? "Complaint is anomalous. Please investigate."
+                    : "Complaint is valid."}
+                </p>
 
-            <TabsContent value="3">
-              <div className="space-y-4">
-                <select name="crimeType" className="w-full border rounded-md p-2" onChange={handleInput}>
-                  <option>Select Crime Type</option>
-                  <option value="Theft">Theft</option>
-                  <option value="Assault">Assault</option>
-                  <option value="Cybercrime">Cybercrime</option>
-                </select>
-                <Input name="dateTime" type="datetime-local" onChange={handleInput} />
-                <Textarea name="description" placeholder="Describe the incident..." onChange={handleInput} />
-                <Button onClick={() => setStep(4)} className="w-full">Next</Button>
+                {/* WHY Section */}
+                {scores.isAnomalous && scores.reasons && scores.reasons.length > 0 && (
+                  <ul className="mt-2 list-disc ml-6 text-red-700 text-sm">
+                    {scores.reasons.map((reason, i) => (
+                      <li key={i}>{reason}</li>
+                    ))}
+                  </ul>
+                )}
               </div>
-            </TabsContent>
-
-            <TabsContent value="4">
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center">
-                <Upload className="mx-auto h-12 w-12 text-gray-400" />
-                <p className="mt-2">Drag and drop files here or click to browse</p>
-                <p className="text-sm text-gray-500 mt-1">Supported formats: PDF, JPG, MP4 (Max 50MB)</p>
-                <Input type="file" multiple accept="image/*,video/*,.pdf,.mp3" onChange={(e) => setEvidenceFiles(e.target.files)} />
-              </div>
-              <Button onClick={() => setStep(5)} className="w-full mt-4">Next</Button>
-            </TabsContent>
-
-            <TabsContent value="5">
-              <div className="space-y-4 bg-gray-50 p-6 rounded-lg">
-                <h3 className="font-semibold">Review your complaint</h3>
-                {/* Optional: Render summary here */}
-                <Button onClick={handleSubmit} className="w-full bg-police-green text-white hover:bg-police-green/90">
-                  <FileText className="mr-2 h-4 w-4" />
-                  Submit Complaint
-                </Button>
-              </div>
-            </TabsContent>
-          </Tabs>
+            </div>
+          )}
         </div>
       </div>
     </MainLayout>
